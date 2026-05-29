@@ -91,9 +91,11 @@ class PynozzleGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("pynozzle - Nozzle Design Suite")
-        self.geometry("1040x760")
-        self.minsize(860, 620)
+        self._enable_hidpi()
         self._apply_theme()
+        scale = getattr(self, "_dpi_scale", 1.0)
+        self.geometry(f"{int(1040 * scale)}x{int(760 * scale)}")
+        self.minsize(int(860 * scale), int(620 * scale))
 
         self._log_q = queue.Queue()
         self._busy = False
@@ -126,6 +128,19 @@ class PynozzleGUI(tk.Tk):
     # ===================================================================
     #  appearance
     # ===================================================================
+    def _enable_hidpi(self):
+        """Scale Tk to the screen's real DPI (process DPI-awareness is set
+        in main() before the root window is created)."""
+        try:
+            dpi = self.winfo_fpixels("1i")        # dots per inch
+            if dpi and dpi > 0:
+                self.tk.call("tk", "scaling", dpi / 72.0)
+                self._dpi_scale = max(1.0, dpi / 96.0)
+            else:
+                self._dpi_scale = 1.0
+        except Exception:
+            self._dpi_scale = 1.0
+
     def _apply_theme(self):
         """A cleaner, more modern look using ttk's 'clam' theme + accents."""
         style = ttk.Style(self)
@@ -218,17 +233,20 @@ class PynozzleGUI(tk.Tk):
                 expand=True)
             return frame, (lambda fn: None)
 
-        fig = Figure(figsize=(5, 3.2), dpi=100)
+        fig = Figure(figsize=(5, 3.4), dpi=100)
+        fig.patch.set_facecolor("#ffffff")
         canvas = FigureCanvasTkAgg(fig, master=frame)
         canvas.get_tk_widget().pack(fill="both", expand=True)
 
-        def draw(plot_callable):
+        def draw(build_callable):
+            """build_callable(fig) builds whatever axes it needs."""
             fig.clear()
-            ax = fig.add_subplot(111)
             try:
-                plot_callable(ax)
+                build_callable(fig)
             except Exception as e:        # pragma: no cover
-                ax.text(0.5, 0.5, f"plot error: {e}", ha="center")
+                ax = fig.add_subplot(111)
+                ax.text(0.5, 0.5, f"plot error: {e}", ha="center",
+                        wrap=True)
             fig.tight_layout()
             canvas.draw()
 
@@ -482,14 +500,12 @@ class PynozzleGUI(tk.Tk):
         g = result.grid
         J = result.last_rrc
         ACC = "#2f6db5"
+        xw = g.x[0, :J + 1]
+        rw = g.r[0, :J + 1]
 
-        def wall_xy():
-            n = J + 1
-            return g.x[0, :n], g.r[0, :n]
-
-        def plot(ax):
+        def build(fig):
+            ax = fig.add_subplot(111)
             if view == "Nozzle Contour":
-                xw, rw = wall_xy()
                 ax.plot(xw, rw, "-", color=ACC, lw=1.8)
                 ax.plot(xw, -rw, "-", color=ACC, lw=1.8)
                 ax.fill_between(xw, rw, -rw, color=ACC, alpha=0.10)
@@ -497,12 +513,10 @@ class PynozzleGUI(tk.Tk):
                 ax.set_title("Calculated MOC Nozzle Contour")
 
             elif view == "Characteristic Mesh":
-                # right-running characteristics (constant j)
                 for j in range(J + 1):
                     n = int(g.i_last[j]) + 1
                     ax.plot(g.x[:n, j], g.r[:n, j], "-",
                             color="#9ec4ec", lw=0.4)
-                # left-running characteristics (constant i across j)
                 imax = int(max(g.i_last[:J + 1])) if J >= 0 else 0
                 for i in range(imax + 1):
                     xs, rs = [], []
@@ -512,37 +526,48 @@ class PynozzleGUI(tk.Tk):
                             rs.append(g.r[i, j])
                     if len(xs) > 1:
                         ax.plot(xs, rs, "-", color="#d98cb3", lw=0.4)
-                # wall + axis emphasised
-                xw, rw = wall_xy()
                 ax.plot(xw, rw, "-", color=ACC, lw=1.6)
                 ax.axhline(0, color="#555", lw=0.8)
                 ax.set_title("Characteristic Mesh "
                              "(blue=RRC, pink=LRC, dark=wall)")
 
-            else:  # Mach Field
+            else:  # Mach Field, clipped to the nozzle wall
+                from matplotlib.path import Path as MplPath
+                from matplotlib.patches import PathPatch
                 xs, rs, ms = [], [], []
                 for j in range(J + 1):
                     for i in range(int(g.i_last[j]) + 1):
                         xs.append(g.x[i, j])
                         rs.append(g.r[i, j])
                         ms.append(g.mach[i, j])
+                mappable = None
                 try:
-                    tcf = ax.tricontourf(xs, rs, ms, levels=24,
-                                         cmap="turbo")
-                    ax.figure.colorbar(tcf, ax=ax, label="Mach",
-                                       fraction=0.046, pad=0.04)
+                    mappable = ax.tricontourf(xs, rs, ms, levels=24,
+                                              cmap="turbo")
                 except Exception:
-                    sc = ax.scatter(xs, rs, c=ms, s=3, cmap="turbo")
-                    ax.figure.colorbar(sc, ax=ax, label="Mach")
-                xw, rw = wall_xy()
-                ax.plot(xw, rw, "-", color="black", lw=1.0)
+                    mappable = ax.scatter(xs, rs, c=ms, s=3, cmap="turbo")
+                # clip the field to the wall polygon (wall down to axis)
+                verts = list(zip(xw, rw)) + [(float(xw[-1]), 0.0),
+                                             (float(xw[0]), 0.0)]
+                clip = PathPatch(MplPath(verts), transform=ax.transData,
+                                 facecolor="none", edgecolor="none")
+                ax.add_patch(clip)
+                try:
+                    for coll in mappable.collections:
+                        coll.set_clip_path(clip)
+                except AttributeError:
+                    mappable.set_clip_path(clip)
+                fig.colorbar(mappable, ax=ax, label="Mach",
+                             fraction=0.046, pad=0.04)
+                ax.plot(xw, rw, "-", color="black", lw=1.2)
+                ax.axhline(0, color="#555", lw=0.8)
                 ax.set_title("Mach Field")
 
             ax.set_xlabel("Axial Distance / R*")
             ax.set_ylabel("Radial Distance / R*")
             ax.set_aspect("equal", adjustable="datalim")
 
-        self._moc2d_draw(plot)
+        self._moc2d_draw(build)
 
     # ===================================================================
     #  STT tab
@@ -694,6 +719,20 @@ class PynozzleGUI(tk.Tk):
         b.pack(side="right", padx=3)
         self._run_buttons.append(b)
 
+        # plot with view selector (Contour X-R / 3D Streamlines)
+        v["plot_view"] = tk.StringVar(value="Contour (X vs R)")
+        vbar = ttk.Frame(ctrl)
+        vbar.pack(side="top", fill="x", pady=(6, 0))
+        ttk.Label(vbar, text="View:").pack(side="left")
+        cb = ttk.Combobox(vbar, textvariable=v["plot_view"], state="readonly",
+                          width=22, values=("Contour (X vs R)",
+                                            "3D Streamlines"))
+        cb.pack(side="left", padx=4)
+        cb.bind("<<ComboboxSelected>>", lambda e: self._stt_redraw())
+        pf, self._stt_draw = self._plot_area(ctrl)
+        pf.pack(side="top", fill="both", expand=True, pady=4)
+        self._stt_result = None
+
         self._stt_vars = v
 
     def _stt_collect(self):
@@ -813,6 +852,45 @@ class PynozzleGUI(tk.Tk):
                 sv.set(f"{getattr(result, key):.6g}")
             except Exception:
                 sv.set("-")
+        self._stt_result = result
+        self._stt_redraw()
+
+    def _stt_redraw(self):
+        result = getattr(self, "_stt_result", None)
+        if result is None or getattr(result, "state", None) is None:
+            return
+        import numpy as np
+        st = result.state
+        view = self._stt_vars["plot_view"].get()
+        n_sl = int(getattr(st, "n_new_sls", 0))
+        xt, yt, zt = st.xt, st.yt, st.zt
+        nt = st.nt
+
+        def build(fig):
+            if view == "3D Streamlines":
+                ax = fig.add_subplot(111, projection="3d")
+                for i in range(n_sl):
+                    m = int(nt[i])
+                    if m > 1:
+                        ax.plot(xt[i, :m], yt[i, :m], zt[i, :m],
+                                color="#2f6db5", lw=0.6)
+                ax.set_xlabel("X (in)")
+                ax.set_ylabel("Y (in)")
+                ax.set_zlabel("Z (in)")
+                ax.set_title("Traced Streamlines (3D)")
+            else:  # Contour (X vs R)
+                ax = fig.add_subplot(111)
+                for i in range(n_sl):
+                    m = int(nt[i])
+                    if m > 1:
+                        r = np.hypot(yt[i, :m], zt[i, :m])
+                        ax.plot(xt[i, :m], r, color="#2f6db5", lw=0.5)
+                ax.set_xlabel("Axial Distance (in)")
+                ax.set_ylabel("Radial Distance (in)")
+                ax.set_title("Traced Nozzle Contour")
+                ax.set_aspect("equal", adjustable="datalim")
+
+        self._stt_draw(build)
 
     # ===================================================================
     #  3D MOC tab
@@ -872,11 +950,23 @@ class PynozzleGUI(tk.Tk):
                        "the sample). The full cone10 march takes ~1 minute."
                   ).grid(row=3, column=0, columnspan=2, sticky="w", padx=8)
 
+        v["plot_view"] = tk.StringVar(value="Wall Mach (R vs Z)")
+        vbar = ttk.Frame(tab)
+        vbar.grid(row=4, column=0, columnspan=2, sticky="w", padx=8)
+        ttk.Label(vbar, text="View:").pack(side="left")
+        cb = ttk.Combobox(vbar, textvariable=v["plot_view"], state="readonly",
+                          width=24, values=("Input Geometry",
+                                            "Wall Mach (R vs Z)",
+                                            "3D Wall Surface"))
+        cb.pack(side="left", padx=4)
+        cb.bind("<<ComboboxSelected>>", lambda e: self._moc3d_redraw())
+
         pf, self._moc3d_draw = self._plot_area(tab)
-        pf.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=6, pady=4)
-        tab.rowconfigure(4, weight=1)
+        pf.grid(row=5, column=0, columnspan=2, sticky="nsew", padx=6, pady=4)
+        tab.rowconfigure(5, weight=1)
         tab.columnconfigure(0, weight=1)
         tab.columnconfigure(1, weight=1)
+        self._moc3d_payload = None
         self._moc3d_vars = v
 
     def _run_moc3d(self):
@@ -918,18 +1008,73 @@ class PynozzleGUI(tk.Tk):
         self._launch(work, "3D MOC", on_success=self._plot_moc3d)
 
     def _plot_moc3d(self, payload):
+        self._moc3d_payload = payload
+        self._moc3d_redraw()
+
+    @staticmethod
+    def _read_wall_plt(path):
+        """Read a 3D Wall.plt; return dict of column arrays."""
+        import numpy as np
+        rows = []
+        for ln in open(path, errors="replace"):
+            parts = ln.replace("\r", "").rstrip("\n").split("\t")
+            if len(parts) < 16:
+                continue
+            try:
+                rows.append([float(x) for x in parts])
+            except ValueError:
+                continue
+        a = np.array(rows) if rows else np.zeros((0, 16))
+        return a
+
+    def _moc3d_redraw(self):
+        payload = getattr(self, "_moc3d_payload", None)
+        if payload is None:
+            return
+        import numpy as np
         result, cfg = payload
+        view = self._moc3d_vars["plot_view"].get()
 
-        def plot(ax):
-            ax.plot(cfg.z, cfg.r, "-", color="#4f9dde", lw=1.6)
-            ax.plot(cfg.z, [-x for x in cfg.r], "-", color="#4f9dde", lw=1.6)
-            ax.axhline(0, color="#888", lw=0.6, ls="--")
-            ax.set_xlabel("Z (in)")
-            ax.set_ylabel("R (in)")
-            ax.set_title("Wall Contour (input geometry)")
-            ax.set_aspect("equal", adjustable="datalim")
+        def build(fig):
+            if view == "Input Geometry":
+                ax = fig.add_subplot(111)
+                ax.plot(cfg.z, cfg.r, "-", color="#2f6db5", lw=1.6)
+                ax.plot(cfg.z, [-x for x in cfg.r], "-", color="#2f6db5",
+                        lw=1.6)
+                ax.axhline(0, color="#888", lw=0.6, ls="--")
+                ax.set_xlabel("Z (in)")
+                ax.set_ylabel("R (in)")
+                ax.set_title("Wall Contour (input geometry)")
+                ax.set_aspect("equal", adjustable="datalim")
+                return
 
-        self._moc3d_draw(plot)
+            wall = Path(result.output_dir or ".") / "Wall.plt"
+            a = self._read_wall_plt(wall) if wall.exists() else np.zeros((0, 16))
+            if a.shape[0] == 0:
+                ax = fig.add_subplot(111)
+                ax.text(0.5, 0.5, "Wall.plt not found", ha="center")
+                return
+            X, Y, Z, R, Mach = a[:, 0], a[:, 1], a[:, 2], a[:, 3], a[:, 9]
+
+            if view == "3D Wall Surface":
+                ax = fig.add_subplot(111, projection="3d")
+                p = ax.scatter(X, Y, Z, c=Mach, s=2, cmap="turbo")
+                fig.colorbar(p, ax=ax, label="Mach", fraction=0.046,
+                             pad=0.08)
+                ax.set_xlabel("X (in)")
+                ax.set_ylabel("Y (in)")
+                ax.set_zlabel("Z (in)")
+                ax.set_title("Marched Wall (3D, colored by Mach)")
+            else:  # Wall Mach (R vs Z)
+                ax = fig.add_subplot(111)
+                p = ax.scatter(Z, R, c=Mach, s=4, cmap="turbo")
+                fig.colorbar(p, ax=ax, label="Mach", fraction=0.046,
+                             pad=0.04)
+                ax.set_xlabel("Z (in)")
+                ax.set_ylabel("R (in)")
+                ax.set_title("Marched Wall Mach")
+
+        self._moc3d_draw(build)
 
     # ===================================================================
     #  run machinery
@@ -1000,7 +1145,25 @@ class PynozzleGUI(tk.Tk):
         self._log.configure(state="disabled")
 
 
+def _set_win_dpi_awareness():
+    """Tell Windows we handle DPI ourselves, BEFORE any Tk window exists.
+    Without this the app renders tiny on high-DPI Windows displays."""
+    import sys
+    if sys.platform != "win32":
+        return
+    import ctypes
+    for attempt in (lambda: ctypes.windll.shcore.SetProcessDpiAwareness(2),
+                    lambda: ctypes.windll.shcore.SetProcessDpiAwareness(1),
+                    lambda: ctypes.windll.user32.SetProcessDPIAware()):
+        try:
+            attempt()
+            return
+        except Exception:
+            continue
+
+
 def main():
+    _set_win_dpi_awareness()
     app = PynozzleGUI()
     app.mainloop()
     return 0
