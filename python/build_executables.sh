@@ -26,10 +26,10 @@ fi
 echo ">>> Installing pynozzle + PyInstaller"
 pip install -q --upgrade pip
 pip install -q -e .
-pip install -q pyinstaller
+pip install -q matplotlib pyinstaller
 
 # 3. Build each tool as a single-file executable
-mkdir -p dist build
+mkdir -p dist
 rm -rf build pynozzle-*.spec
 
 for tool in moc2d stt moc3d; do
@@ -50,6 +50,7 @@ EOF
         --workpath "build/${name}" \
         --specpath build \
         --collect-all pynozzle \
+        --collect-all matplotlib \
         --hidden-import scipy._cyutility \
         --hidden-import scipy.special._cdflib \
         "/tmp/${name}_launcher.py" \
