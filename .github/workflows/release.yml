@@ -34,7 +34,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             asset: pynozzle-gui-linux
           - os: windows-latest
             asset: pynozzle-gui-windows.exe
