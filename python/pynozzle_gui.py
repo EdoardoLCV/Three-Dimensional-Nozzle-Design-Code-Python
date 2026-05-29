@@ -91,8 +91,9 @@ class PynozzleGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("pynozzle - Nozzle Design Suite")
-        self.geometry("980x720")
-        self.minsize(820, 600)
+        self.geometry("1040x760")
+        self.minsize(860, 620)
+        self._apply_theme()
 
         self._log_q = queue.Queue()
         self._busy = False
@@ -121,6 +122,42 @@ class PynozzleGUI(tk.Tk):
             side="bottom", anchor="e", pady=2)
 
         self.after(80, self._drain_log)
+
+    # ===================================================================
+    #  appearance
+    # ===================================================================
+    def _apply_theme(self):
+        """A cleaner, more modern look using ttk's 'clam' theme + accents."""
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:                      # pragma: no cover
+            pass
+        BG = "#f4f6f8"
+        FG = "#1f2933"
+        ACCENT = "#2f6db5"
+        self.configure(background=BG)
+        base = ("Segoe UI", 10) if self.tk.call("tk", "windowingsystem") \
+            == "win32" else ("DejaVu Sans", 10)
+        style.configure(".", background=BG, foreground=FG, font=base)
+        style.configure("TFrame", background=BG)
+        style.configure("TLabelframe", background=BG, borderwidth=1,
+                        relief="groove")
+        style.configure("TLabelframe.Label", background=BG, foreground=ACCENT,
+                        font=(base[0], 10, "bold"))
+        style.configure("TLabel", background=BG)
+        style.configure("TCheckbutton", background=BG)
+        style.configure("TRadiobutton", background=BG)
+        style.configure("TNotebook", background=BG)
+        style.configure("TNotebook.Tab", padding=(14, 6),
+                        font=(base[0], 10, "bold"))
+        style.configure("TButton", padding=(10, 5))
+        style.configure("Accent.TButton", padding=(12, 7),
+                        font=(base[0], 10, "bold"),
+                        background=ACCENT, foreground="white")
+        style.map("Accent.TButton",
+                  background=[("active", "#27598f"), ("disabled", "#9bb4d0")])
+        self._base_font = base
 
     # ===================================================================
     #  small form helpers
@@ -308,15 +345,27 @@ class PynozzleGUI(tk.Tk):
         ttk.Button(btns, text="Save .inp",
                    command=self._moc2d_save).pack(side="left", padx=3)
         b = ttk.Button(btns, text="Calculate MOC Grid",
-                       command=self._run_moc2d)
+                       command=self._run_moc2d, style="Accent.TButton")
         b.pack(side="right", padx=3)
         self._run_buttons.append(b)
 
-        # --- plot ---
+        # --- plot with a view selector ---
+        v["plot_view"] = tk.StringVar(value="Characteristic Mesh")
+        vbar = ttk.Frame(right)
+        vbar.grid(row=6, column=0, sticky="we", padx=4)
+        ttk.Label(vbar, text="View:").pack(side="left")
+        cb = ttk.Combobox(vbar, textvariable=v["plot_view"], state="readonly",
+                          width=22, values=("Nozzle Contour",
+                                            "Characteristic Mesh",
+                                            "Mach Field"))
+        cb.pack(side="left", padx=4)
+        cb.bind("<<ComboboxSelected>>", lambda e: self._moc2d_redraw())
+
         pf, self._moc2d_draw = self._plot_area(right)
-        pf.grid(row=6, column=0, sticky="nsew", padx=4, pady=4)
-        right.rowconfigure(6, weight=1)
+        pf.grid(row=7, column=0, sticky="nsew", padx=4, pady=4)
+        right.rowconfigure(7, weight=1)
         right.columnconfigure(0, weight=1)
+        self._moc2d_result = None
 
         self._moc2d_vars = v
 
@@ -422,19 +471,75 @@ class PynozzleGUI(tk.Tk):
         self._launch(work, "2D MOC", on_success=self._plot_moc2d)
 
     def _plot_moc2d(self, result):
+        self._moc2d_result = result
+        self._moc2d_redraw()
+
+    def _moc2d_redraw(self):
+        result = getattr(self, "_moc2d_result", None)
+        if result is None:
+            return
+        view = self._moc2d_vars["plot_view"].get()
         g = result.grid
-        n = result.last_rrc
-        xw = g.x[0, :n + 1]
-        rw = g.r[0, :n + 1]
+        J = result.last_rrc
+        ACC = "#2f6db5"
+
+        def wall_xy():
+            n = J + 1
+            return g.x[0, :n], g.r[0, :n]
 
         def plot(ax):
-            ax.plot(xw, rw, "-", color="#4f9dde", lw=1.6)
-            ax.plot(xw, -rw, "-", color="#4f9dde", lw=1.6)
-            ax.fill_between(xw, rw, -rw, color="#4f9dde", alpha=0.10)
-            ax.axhline(0, color="#888", lw=0.6, ls="--")
-            ax.set_xlabel("X / R*")
-            ax.set_ylabel("R / R*")
-            ax.set_title("Nozzle Contour")
+            if view == "Nozzle Contour":
+                xw, rw = wall_xy()
+                ax.plot(xw, rw, "-", color=ACC, lw=1.8)
+                ax.plot(xw, -rw, "-", color=ACC, lw=1.8)
+                ax.fill_between(xw, rw, -rw, color=ACC, alpha=0.10)
+                ax.axhline(0, color="#888", lw=0.6, ls="--")
+                ax.set_title("Calculated MOC Nozzle Contour")
+
+            elif view == "Characteristic Mesh":
+                # right-running characteristics (constant j)
+                for j in range(J + 1):
+                    n = int(g.i_last[j]) + 1
+                    ax.plot(g.x[:n, j], g.r[:n, j], "-",
+                            color="#9ec4ec", lw=0.4)
+                # left-running characteristics (constant i across j)
+                imax = int(max(g.i_last[:J + 1])) if J >= 0 else 0
+                for i in range(imax + 1):
+                    xs, rs = [], []
+                    for j in range(J + 1):
+                        if i <= int(g.i_last[j]):
+                            xs.append(g.x[i, j])
+                            rs.append(g.r[i, j])
+                    if len(xs) > 1:
+                        ax.plot(xs, rs, "-", color="#d98cb3", lw=0.4)
+                # wall + axis emphasised
+                xw, rw = wall_xy()
+                ax.plot(xw, rw, "-", color=ACC, lw=1.6)
+                ax.axhline(0, color="#555", lw=0.8)
+                ax.set_title("Characteristic Mesh "
+                             "(blue=RRC, pink=LRC, dark=wall)")
+
+            else:  # Mach Field
+                xs, rs, ms = [], [], []
+                for j in range(J + 1):
+                    for i in range(int(g.i_last[j]) + 1):
+                        xs.append(g.x[i, j])
+                        rs.append(g.r[i, j])
+                        ms.append(g.mach[i, j])
+                try:
+                    tcf = ax.tricontourf(xs, rs, ms, levels=24,
+                                         cmap="turbo")
+                    ax.figure.colorbar(tcf, ax=ax, label="Mach",
+                                       fraction=0.046, pad=0.04)
+                except Exception:
+                    sc = ax.scatter(xs, rs, c=ms, s=3, cmap="turbo")
+                    ax.figure.colorbar(sc, ax=ax, label="Mach")
+                xw, rw = wall_xy()
+                ax.plot(xw, rw, "-", color="black", lw=1.0)
+                ax.set_title("Mach Field")
+
+            ax.set_xlabel("Axial Distance / R*")
+            ax.set_ylabel("Radial Distance / R*")
             ax.set_aspect("equal", adjustable="datalim")
 
         self._moc2d_draw(plot)
@@ -585,7 +690,7 @@ class PynozzleGUI(tk.Tk):
             side="left", padx=3)
         ttk.Button(bb, text="Save .inp", command=self._stt_save).pack(
             side="left", padx=3)
-        b = ttk.Button(bb, text="Execute", command=self._run_stt)
+        b = ttk.Button(bb, text="Execute", command=self._run_stt, style="Accent.TButton")
         b.pack(side="right", padx=3)
         self._run_buttons.append(b)
 
@@ -758,7 +863,7 @@ class PynozzleGUI(tk.Tk):
 
         bb = ttk.Frame(tab)
         bb.grid(row=2, column=1, sticky="e", padx=6, pady=4)
-        b = ttk.Button(bb, text="Calculate Nozzle", command=self._run_moc3d)
+        b = ttk.Button(bb, text="Calculate Nozzle", command=self._run_moc3d, style="Accent.TButton")
         b.pack(side="right")
         self._run_buttons.append(b)
 
