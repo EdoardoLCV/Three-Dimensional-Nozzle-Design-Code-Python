@@ -1,0 +1,92 @@
+# Builds double-clickable GUI applications for Windows, macOS and Linux
+# and attaches them to a GitHub Release — automatically, on GitHub's
+# servers. Nobody has to compile anything by hand.
+#
+# HOW TO TRIGGER A RELEASE
+#   1. Commit your code.
+#   2. Tag a version and push the tag, e.g.:
+#          git tag v1.0.0
+#          git push origin v1.0.0
+#   3. Watch the "Actions" tab. When it finishes, the binaries appear
+#      under "Releases" on your repo's front page.
+#   (You can also run it manually from the Actions tab via "Run workflow".)
+#
+# IF YOUR PYTHON SUITE IS NOT IN A "python/" SUBFOLDER, change WORKDIR below.
+
+name: Build GUI apps
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write          # needed to create the Release and upload assets
+
+env:
+  WORKDIR: python           # folder that contains pyproject.toml + pynozzle_gui.py
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: pynozzle-gui-linux
+          - os: windows-latest
+            asset: pynozzle-gui-windows.exe
+          - os: macos-latest
+            asset: pynozzle-gui-macos
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package + PyInstaller
+        working-directory: ${{ env.WORKDIR }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pyinstaller
+
+      - name: Build single-file GUI binary
+        working-directory: ${{ env.WORKDIR }}
+        run: >
+          pyinstaller --onefile --windowed
+          --name pynozzle-gui
+          --collect-all pynozzle
+          --collect-all scipy
+          --collect-all numpy
+          pynozzle_gui.py
+
+      - name: Rename binary for this OS (unix)
+        if: runner.os != 'Windows'
+        working-directory: ${{ env.WORKDIR }}
+        run: mv dist/pynozzle-gui "dist/${{ matrix.asset }}"
+
+      - name: Rename binary for this OS (windows)
+        if: runner.os == 'Windows'
+        working-directory: ${{ env.WORKDIR }}
+        run: Move-Item dist/pynozzle-gui.exe "dist/${{ matrix.asset }}"
+
+      # The example input files (.inp / .geo) are the same on every OS, so
+      # we bundle them once, on the Linux runner, as a separate download.
+      - name: Package example input files
+        if: runner.os == 'Linux'
+        working-directory: ${{ env.WORKDIR }}
+        run: zip -r dist/pynozzle-examples.zip examples
+
+      - name: Upload to the Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.WORKDIR }}/dist/${{ matrix.asset }}
+            ${{ env.WORKDIR }}/dist/pynozzle-examples.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

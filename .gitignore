@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.eggs/
+
+# Build / packaging artifacts
+build/
+dist/
+*.spec
+.venv/
+venv/
+
+# OS cruft
+.DS_Store

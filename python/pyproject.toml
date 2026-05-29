@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pynozzle"
+version = "0.1.0"
+description = "Python port of the JHU/APL 2D and 3D Method-of-Characteristics nozzle design codes"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "See license.txt of the original distribution"}
+authors = [
+    {name = "Python port; original Fortran/C++ by Tharen Rice (JHU/APL)"}
+]
+dependencies = [
+    "numpy>=1.20",
+    "scipy>=1.7",
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.4"]
+
+[project.scripts]
+pynozzle-moc2d = "pynozzle.moc2d.cli:main"
+pynozzle-stt = "pynozzle.stt.cli:main"
+pynozzle-moc3d = "pynozzle.moc3d.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pynozzle*"]
